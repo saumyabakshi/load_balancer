@@ -1,58 +1,68 @@
 package backend
 
-
 import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"sync"
+
 )
 type backend struct {
-	url *url.URL
-	alive bool
-	mux sync.RWMutex
-	connections int32
+	url         *url.URL
+	alive       bool
+	mux         sync.RWMutex
+	connections int
+	reverseProxy *httputil.ReverseProxy
 }
 
 type Backend interface {
 	IsAlive() bool
 	SetAlive(bool)
 	GetURL() *url.URL
-	GetActiveConns() int32
+	GetActiveConns() int
 	Serve(http.ResponseWriter, *http.Request)
 }
 
 func (b *backend) IsAlive() bool {
-	b.mux.Lock()
-	defer b.mux.Unlock()
-	return b.alive 
+	b.mux.RLock()
+	alive := b.alive
+	defer b.mux.RUnlock()
+	return alive 
 }
 
 func (b *backend) SetAlive(alive bool) {
 	b.mux.Lock()
 	b.alive = alive
-	defer b.mux.Unlock()
-}
+	b.mux.Unlock()
+}	
 
 func (b *backend) GetURL() *url.URL {
 	return b.url
 }
 
-func (b *backend) GetActiveConns() int32 {
+func (b *backend) GetActiveConns() int {
+	// RLock is used to allow multiple go routines to read the connections but not write
 	b.mux.RLock()
 	conns := b.connections
-	defer b.mux.RUnlock()
+	b.mux.RUnlock()
 	return conns
 }
 
 func (b *backend) Serve(w http.ResponseWriter, r *http.Request) {
-	atomic.AddInt32(&b.connections, 1)
-	defer atomic.AddInt32(&b.connections, -1)
+	defer func() {
+		b.mux.Lock()
+		b.connections--
+		b.mux.Unlock()
+	
+	}()
+	b.mux.Lock()
+	b.connections++
+	b.mux.Unlock()
 	b.reverseProxy.ServeHTTP(w, r)
 
 }
 
-func NewBackend(url *url.URL, rp *httputil.reverseProxy) Backend {
+func NewBackend(url *url.URL, rp *httputil.ReverseProxy) Backend {
 	b := &backend{
 		url: url,
 		alive: true,
